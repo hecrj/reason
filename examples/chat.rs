@@ -1,4 +1,4 @@
-use reason::{Assistant, Message};
+use reason::{Message, Reason};
 
 use anyhow::bail;
 use sipper::Sipper;
@@ -12,7 +12,7 @@ async fn main() -> anyhow::Result<()> {
         bail!("Model argument not provided!");
     };
 
-    let mut boot = Assistant::boot(model, reason::Backend::Cuda).pin();
+    let mut boot = Reason::boot(model, reason::Backend::Cuda).pin();
 
     while let Some(progress) = boot.sip().await {
         match progress {
@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let assistant = boot.await?;
+    let reason = boot.await?;
 
     println!("-------------------");
     println!("Assistant is ready. Break the ice!");
@@ -52,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
         messages.push(Message::User(message.trim().to_owned()));
         message.clear();
 
-        let mut reply = assistant
+        let mut reply = reason
             .reply("You are a helpful assistant.", &messages, &[])
             .pin();
 

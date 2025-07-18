@@ -5,29 +5,63 @@ pub use error::Error;
 use serde::Deserialize;
 use serde_json::json;
 use sipper::{FutureExt, Sipper, Straw, StreamExt, sipper};
+use tokio::io::{self, AsyncBufReadExt};
 use tokio::process;
+use tokio::task;
+use tokio::time;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub use reqwest::IntoUrl;
+pub use url::Url;
+
 #[derive(Debug, Clone)]
-pub struct Assistant {
-    model: PathBuf,
-    _server: Arc<Server>,
+pub struct Reason {
+    name: String,
+    server: Arc<Server>,
 }
 
-impl Assistant {
+#[derive(Debug, Clone)]
+pub enum Source {
+    Local(PathBuf),
+    Remote(Url),
+}
+
+impl Reason {
     const LLAMA_CPP_CONTAINER_CPU: &'static str = "ghcr.io/ggerganov/llama.cpp:server-b4600";
     const LLAMA_CPP_CONTAINER_CUDA: &'static str = "ghcr.io/ggerganov/llama.cpp:server-cuda-b4600";
     const LLAMA_CPP_CONTAINER_ROCM: &'static str = "ghcr.io/hecrj/icebreaker:server-rocm-b4600";
 
-    pub fn boot(model: impl AsRef<Path>, backend: Backend) -> impl Straw<Self, BootEvent, Error> {
-        use tokio::io::{self, AsyncBufReadExt};
-        use tokio::process;
-        use tokio::task;
-        use tokio::time;
+    pub async fn connect(host: impl IntoUrl, model: &str) -> Result<Self, Error> {
+        let host = host.into_url()?;
+        let client = reqwest::Client::new();
 
+        loop {
+            if let Ok(_) = client
+                .get(format!(
+                    "{host}/v1/models",
+                    host = host.as_str().trim_end_matches('/')
+                ))
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await?
+                .error_for_status()
+            {
+                break;
+            }
+
+            time::sleep(Duration::from_secs(1)).await;
+        }
+
+        Ok(Self {
+            name: model.to_owned(),
+            server: Arc::new(Server::Remote(host)),
+        })
+    }
+
+    pub fn boot(model: impl AsRef<Path>, backend: Backend) -> impl Straw<Self, BootEvent, Error> {
         #[derive(Clone)]
         struct Sender(sipper::Sender<BootEvent>);
 
@@ -44,8 +78,13 @@ impl Assistant {
         sipper(async move |sender| {
             let model = model.as_ref().to_owned();
             let model_file = model.file_stem().unwrap_or_default();
-            let mut sender = Sender(sender);
+            let name = model
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
 
+            let mut sender = Sender(sender);
             sender.progress("Detecting executor...", 0).await;
 
             let (server, stdout, stderr) = if let Ok(version) =
@@ -77,7 +116,14 @@ impl Assistant {
                 let stdout = server.stdout.take();
                 let stderr = server.stderr.take();
 
-                (Server::Process(server), stdout, stderr)
+                (
+                    Server::Process {
+                        _handle: server,
+                        model,
+                    },
+                    stdout,
+                    stderr,
+                )
             } else if let Ok(_docker) = process::Command::new("docker")
                 .arg("version")
                 .output()
@@ -172,7 +218,10 @@ impl Assistant {
 
                 sender.progress("Launching assistant...", 99).await;
 
-                let server = Server::Container(container.clone());
+                let server = Server::Container {
+                    id: container.clone(),
+                    model,
+                };
 
                 let _start = process::Command::new("docker")
                     .args(["start", &container])
@@ -221,23 +270,22 @@ impl Assistant {
                 .boxed()
             };
 
-            let check_health = async move {
-                loop {
-                    time::sleep(Duration::from_secs(1)).await;
+            let check_health = {
+                let address = server.host();
 
-                    if let Ok(response) = reqwest::get(format!(
-                        "http://localhost:{port}/health",
-                        port = Server::PORT
-                    ))
-                    .await
-                    {
-                        if response.error_for_status().is_ok() {
-                            return true;
+                async move {
+                    loop {
+                        time::sleep(Duration::from_secs(1)).await;
+
+                        if let Ok(response) = reqwest::get(format!("{address}/health")).await {
+                            if response.error_for_status().is_ok() {
+                                return true;
+                            }
                         }
                     }
                 }
-            }
-            .boxed();
+                .boxed()
+            };
 
             let log_handle = task::spawn(log_output);
 
@@ -245,8 +293,8 @@ impl Assistant {
                 log_handle.abort();
 
                 return Ok(Self {
-                    model,
-                    _server: Arc::new(server),
+                    name,
+                    server: Arc::new(server),
                 });
             }
 
@@ -341,11 +389,11 @@ impl Assistant {
 
                 client
                     .post(format!(
-                        "http://localhost:{port}/v1/chat/completions",
-                        port = Server::PORT
+                        "{host}/v1/chat/completions",
+                        host = self.server.host(),
                     ))
                     .json(&json!({
-                        "model": self.model.file_stem().unwrap_or_default().to_string_lossy(),
+                        "model": self.name,
                         "messages": messages,
                         "stream": true,
                         "cache_prompt": true,
@@ -427,8 +475,17 @@ impl Assistant {
         })
     }
 
-    pub fn model(&self) -> &Path {
-        &self.model
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn source(&self) -> Source {
+        match self.server.as_ref() {
+            Server::Container { model, .. } | Server::Process { model, .. } => {
+                Source::Local(model.clone())
+            }
+            Server::Remote(url) => Source::Remote(url.clone()),
+        }
     }
 }
 
@@ -496,8 +553,15 @@ pub enum Token {
 
 #[derive(Debug)]
 enum Server {
-    Container(String),
-    Process(process::Child),
+    Container {
+        id: String,
+        model: PathBuf,
+    },
+    Process {
+        _handle: process::Child,
+        model: PathBuf,
+    },
+    Remote(Url),
 }
 
 impl Server {
@@ -533,6 +597,15 @@ impl Server {
             .map(str::trim)
             .filter(|arg| !arg.is_empty())
     }
+
+    fn host(&self) -> String {
+        match self {
+            Server::Container { .. } | Server::Process { .. } => {
+                format!("http://localhost:{port}", port = Self::PORT)
+            }
+            Server::Remote(url) => url.as_str().trim_end_matches("/").to_owned(),
+        }
+    }
 }
 
 impl Drop for Server {
@@ -540,7 +613,7 @@ impl Drop for Server {
         use std::process;
 
         match self {
-            Self::Container(id) => {
+            Self::Container { id, .. } => {
                 let _ = process::Command::new("docker")
                     .args(["stop", id])
                     .stdin(process::Stdio::null())
@@ -548,7 +621,8 @@ impl Drop for Server {
                     .stderr(process::Stdio::null())
                     .spawn();
             }
-            Self::Process(_process) => {}
+            Self::Process { .. } => {}
+            Self::Remote(_url) => {}
         }
     }
 }
