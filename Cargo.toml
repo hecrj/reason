@@ -1,0 +1,30 @@
+[package]
+name = "reason"
+version = "0.1.0-dev"
+edition = "2024"
+description = "Coming soon"
+license = "MIT"
+
+[dependencies]
+futures-util = "0.3"
+serde_json = "1"
+sipper = "0.1"
+thiserror = "2"
+
+reqwest.version = "0.12"
+reqwest.features = ["json"]
+
+serde.version = "1"
+serde.features = ["derive"]
+
+tokio.version = "1.46"
+tokio.features = ["fs", "process"]
+
+tokio-stream.version = "0.1"
+tokio-stream.features = ["io-util"]
+
+[dev-dependencies]
+anyhow = "1"
+
+tokio.version = "1.46"
+tokio.features = ["rt", "rt-multi-thread", "macros"]
