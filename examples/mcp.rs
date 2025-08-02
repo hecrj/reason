@@ -8,7 +8,7 @@ use techne::mcp;
 use techne::server::{self, Server};
 
 use std::env;
-use std::io;
+use std::io::{self, Write};
 
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {
@@ -21,24 +21,32 @@ pub async fn main() -> anyhow::Result<()> {
     }
 
     let mut mcp = {
-        let transport = client::Stdio::run("cargo", ["run", "--example", "mcp", "--", "--server"])?;
-        Client::new("reason", env!("CARGO_PKG_VERSION"), transport).await?
+        print!("> URL of MCP server (blank to simulate one): ");
+        io::stdout().flush()?;
+
+        let mut address = String::new();
+        let _ = io::stdin().read_line(&mut address)?;
+
+        if address.trim().is_empty() {
+            let transport =
+                client::Stdio::run("cargo", ["run", "--example", "mcp", "--", "--server"])?;
+
+            Client::new("reason", env!("CARGO_PKG_VERSION"), transport).await?
+        } else {
+            let transport = client::Http::new(address.trim())?;
+
+            Client::new("reason", env!("CARGO_PKG_VERSION"), transport).await?
+        }
     };
 
-    let mut boot = Reason::boot(model, reason::Backend::Cuda).pin();
+    println!("");
 
-    while let Some(progress) = boot.sip().await {
-        match progress {
-            reason::BootEvent::Progressed { stage, percent } => {
-                println!("{stage} ({percent}%)");
-            }
-            reason::BootEvent::Logged(log) => {
-                println!("{log}");
-            }
-        }
-    }
+    let server = mcp.server().information();
 
-    let reason = boot.await?;
+    println!(
+        "- Connected to MCP server: {} ({})",
+        server.name, server.version,
+    );
 
     let tools: Vec<_> = mcp
         .list_tools()
@@ -47,40 +55,97 @@ pub async fn main() -> anyhow::Result<()> {
         .map(Tool::from)
         .collect();
 
-    dbg!(&tools);
+    println!("- Available tools:");
 
-    let mut messages = vec![
-        Message::system("You are a helpful assistant."),
-        Message::user("What is the weather in Night City?"),
-    ];
+    for Tool::Function { function } in &tools {
+        println!("    {}\n        {}", function.name, function.description);
+    }
 
-    let reply = reason.reply(&messages, &[], &tools).await?;
+    println!("");
+    println!("- Booting {model}...");
 
-    dbg!(&reply);
+    let mut boot = Reason::boot(model, reason::Backend::Cuda).pin();
 
-    for output in reply.outputs {
-        messages.push(Message::Assistant(output.clone()));
+    while let Some(progress) = boot.sip().await {
+        match progress {
+            reason::BootEvent::Progressed { stage, percent } => {
+                println!("- {stage} ({percent}%)");
+            }
+            reason::BootEvent::Logged(_log) => {}
+        }
+    }
 
-        let Output::ToolCalls(tools) = output else {
-            continue;
-        };
+    let reason = boot.await?;
 
-        for tool in tools {
-            let tool::Call::Function {
-                id,
-                name,
-                arguments,
-            } = tool;
+    println!("");
+    println!("-------------------");
+    println!("Assistant is ready. Break the ice!");
+    println!("-------------------");
 
-            let Ok(arguments) = serde_json::from_str(&arguments) else {
+    let mut messages = vec![Message::system("You are a helpful assistant.")];
+    let mut message = String::new();
+    let mut is_processing = false;
+
+    loop {
+        if !is_processing {
+            print!("\n> ");
+            io::stdout().flush()?;
+
+            let _ = io::stdin().read_line(&mut message)?;
+
+            if message.trim().is_empty() {
+                if message.contains("\n") {
+                    message.clear();
+                    continue;
+                }
+
+                return Ok(());
+            }
+
+            messages.push(Message::User(message.trim().to_owned()));
+            message.clear();
+        }
+
+        let mut reply = reason.reply(&messages, &[], &tools).pin();
+
+        println!("");
+
+        while let Some(event) = reply.sip().await {
+            if let Some(text) = event.text() {
+                print!("{text}");
+            }
+
+            io::stdout().flush()?;
+        }
+
+        println!("");
+
+        let reply = reply.await?;
+        is_processing = false;
+
+        for output in reply.outputs {
+            messages.push(Message::Assistant(output.clone()));
+
+            let Output::ToolCalls(tools) = output else {
                 continue;
             };
 
-            let response = mcp.call_tool(name, arguments).await?;
+            for tool in tools {
+                let tool::Call::Function {
+                    id,
+                    name,
+                    arguments,
+                } = tool;
 
-            messages.push(Message::Tool(tool::Response {
-                id,
-                content: match response.content {
+                let Ok(arguments) = serde_json::from_str(&arguments) else {
+                    continue;
+                };
+
+                println!("=> {name}: {arguments}");
+
+                let response = mcp.call_tool(name, arguments).await?;
+
+                let content = match response.content {
                     mcp::server::Content::Unstructured(items) => items
                         .into_iter()
                         .filter_map(|item| {
@@ -92,16 +157,17 @@ pub async fn main() -> anyhow::Result<()> {
                         })
                         .collect(),
                     mcp::server::Content::Structured(value) => serde_json::to_string(&value)?,
-                },
-            }));
+                };
+
+                println!("<= {content}");
+                println!("");
+
+                messages.push(Message::Tool(tool::Response { id, content }));
+
+                is_processing = true;
+            }
         }
     }
-
-    let reply = reason.reply(&messages, &[], &tools).await?;
-
-    dbg!(&reply);
-
-    Ok(())
 }
 
 async fn run_mcp_server() -> io::Result<()> {

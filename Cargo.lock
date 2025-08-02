@@ -355,6 +355,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "hyper"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -367,6 +373,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -1133,6 +1140,7 @@ checksum = "1ad25fcad4972d1a5fe5bf2bb2e1d08aac233e3ac391033f4c6299459c778057"
 dependencies = [
  "futures",
  "log",
+ "reqwest",
  "serde",
  "sipper",
  "techne-mcp",
@@ -1158,6 +1166,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "063e10bdbe8d93ad07bfbbe056cad8eadeb87cc2f7f8e073487735cfe1bc5a54"
 dependencies = [
  "futures",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "log",
  "serde",
  "techne-mcp",

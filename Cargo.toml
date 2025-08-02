@@ -39,5 +39,4 @@ tokio.version = "1.46"
 tokio.features = ["rt", "rt-multi-thread", "macros"]
 
 techne.version = "0.1.0-dev.2"
-techne.features = ["client", "server"]
-techne.default-features = false
+techne.features = ["client", "server", "http"]
