@@ -791,6 +791,9 @@ dependencies = [
  "serde",
  "serde_json",
  "sipper",
+ "skema",
+ "techne",
+ "techne-mcp",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -1017,6 +1020,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "skema"
+version = "0.1.0-dev"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f86860e467f2202e32d6ddd977227c1102e6e65317a9c25cf7a07a20f693263"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1100,6 +1112,56 @@ checksum = "8e1d1b10ced5ca923a1fcb8d03e96b8d3268065d724548c0211415ff6ac6bac4"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "techne"
+version = "0.1.0-dev.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4c85410747b8e9659ddb4bcc0cf8aecd4b15d5c3d2d1c3075439ffa024e5aec"
+dependencies = [
+ "techne-client",
+ "techne-mcp",
+ "techne-server",
+]
+
+[[package]]
+name = "techne-client"
+version = "0.1.0-dev.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ad25fcad4972d1a5fe5bf2bb2e1d08aac233e3ac391033f4c6299459c778057"
+dependencies = [
+ "futures",
+ "log",
+ "serde",
+ "sipper",
+ "techne-mcp",
+ "tokio",
+]
+
+[[package]]
+name = "techne-mcp"
+version = "0.1.0-dev.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0af8accae976edb1fddb5129c32b3360820fb945ea9c81202bac103f644e821"
+dependencies = [
+ "bytes",
+ "serde",
+ "serde_json",
+ "skema",
+]
+
+[[package]]
+name = "techne-server"
+version = "0.1.0-dev.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "063e10bdbe8d93ad07bfbbe056cad8eadeb87cc2f7f8e073487735cfe1bc5a54"
+dependencies = [
+ "futures",
+ "log",
+ "serde",
+ "techne-mcp",
+ "tokio",
 ]
 
 [[package]]

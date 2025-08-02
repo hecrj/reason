@@ -32,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
     println!("-------------------");
 
     let mut message = String::new();
-    let mut messages = Vec::new();
+    let mut messages = vec![Message::system("You are a helpful assistant")];
 
     loop {
         print!("\n> ");
@@ -52,24 +52,20 @@ async fn main() -> anyhow::Result<()> {
         messages.push(Message::User(message.trim().to_owned()));
         message.clear();
 
-        let mut reply = reason
-            .reply("You are a helpful assistant.", &messages, &[])
-            .pin();
+        let mut reply = reason.reply(&messages, &[], &[]).pin();
 
         println!("");
 
-        while let Some((_reply, token)) = reply.sip().await {
-            let token = match token {
-                reason::Token::Reasoning(token) => token,
-                reason::Token::Talking(token) => token,
-            };
+        while let Some(event) = reply.sip().await {
+            if let Some(text) = event.text() {
+                print!("{text}");
+            }
 
-            print!("{token}");
             io::stdout().flush()?;
         }
 
         let reply = reply.await?;
-        messages.push(Message::Assistant(reply.content));
+        messages.extend(reply.outputs.into_iter().map(Message::Assistant));
 
         println!("");
     }

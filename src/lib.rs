@@ -1,6 +1,9 @@
 mod error;
 
+pub mod tool;
+
 pub use error::Error;
+pub use tool::Tool;
 
 use serde::Deserialize;
 use serde_json::json;
@@ -39,7 +42,7 @@ impl Reason {
         let client = reqwest::Client::new();
 
         loop {
-            if let Ok(_) = client
+            if client
                 .get(format!(
                     "{host}/v1/models",
                     host = host.as_str().trim_end_matches('/')
@@ -48,6 +51,7 @@ impl Reason {
                 .send()
                 .await?
                 .error_for_status()
+                .is_ok()
             {
                 break;
             }
@@ -144,7 +148,7 @@ impl Reason {
                     Backend::Cpu => {
                         format!(
                             "create --rm -p {port}:80 -v {volume}:/models \
-                            {container} --model /models/{filename} \
+                            {container} --jinja --model /models/{filename} \
                             --port 80 --host 0.0.0.0",
                             filename = model_file.display(),
                             container = Self::LLAMA_CPP_CONTAINER_CPU,
@@ -155,7 +159,7 @@ impl Reason {
                     Backend::Cuda => {
                         format!(
                             "create --rm --gpus all -p {port}:80 -v {volume}:/models \
-                            {container} --model /models/{filename} \
+                            {container} --jinja --model /models/{filename} \
                             --port 80 --host 0.0.0.0 --gpu-layers 40",
                             filename = model_file.display(),
                             container = Self::LLAMA_CPP_CONTAINER_CUDA,
@@ -302,89 +306,41 @@ impl Reason {
         })
     }
 
-    pub fn reply<'a>(
-        &'a self,
-        prompt: &'a str,
-        messages: &'a [Message],
-        append: &'a [Message],
-    ) -> impl Straw<Reply, (Reply, Token), Error> + 'a {
+    pub fn reply(
+        &self,
+        messages: &[Message],
+        append: &[Message],
+        tools: &[Tool],
+    ) -> impl Straw<Reply, Event, Error> {
         sipper(move |mut progress| async move {
-            let mut reasoning = None;
-            let mut reasoning_started_at: Option<Instant> = None;
-            let mut content = String::new();
-            let mut reasoning_content = String::new();
+            let mut completion = self.complete(messages, append, tools).pin();
+            let mut reply = Reply {
+                outputs: Vec::new(),
+            };
 
-            let mut completion = self.complete(prompt, messages, append).pin();
-
-            while let Some(token) = completion.sip().await {
-                match &token {
-                    Token::Reasoning(token) => {
-                        reasoning = {
-                            let mut reasoning = reasoning.take().unwrap_or_else(|| Reasoning {
-                                content: String::new(),
-                                duration: Duration::ZERO,
-                            });
-
-                            if let Some(reasoning_started_at) = reasoning_started_at {
-                                reasoning.duration = reasoning_started_at.elapsed();
-                            } else {
-                                reasoning_started_at = Some(Instant::now());
-                            }
-
-                            reasoning_content.push_str(token);
-                            reasoning.content = reasoning_content.trim().to_owned();
-
-                            Some(reasoning)
-                        };
-                    }
-                    Token::Talking(token) => {
-                        content.push_str(token);
-                    }
-                }
-
-                progress
-                    .send((
-                        Reply {
-                            reasoning: reasoning.clone(),
-                            content: content.trim().to_owned(),
-                            last_token: if let Token::Talking(token) = &token {
-                                Some(token.clone())
-                            } else {
-                                None
-                            },
-                        },
-                        token,
-                    ))
-                    .await;
+            while let Some(event) = completion.sip().await {
+                reply.update(&event);
+                progress.send(event).await;
             }
 
-            Ok(Reply {
-                reasoning: reasoning.clone(),
-                content: content.trim().to_owned(),
-                last_token: None,
-            })
+            Ok(reply)
         })
     }
 
-    pub fn complete<'a>(
-        &'a self,
-        system_prompt: &'a str,
-        messages: &'a [Message],
-        append: &'a [Message],
-    ) -> impl Straw<(), Token, Error> + 'a {
+    pub fn complete(
+        &self,
+        messages: &[Message],
+        append: &[Message],
+        tools: &[Tool],
+    ) -> impl Straw<(), Event, Error> {
         sipper(move |mut sender| async move {
             let client = reqwest::Client::new();
 
             let request = {
-                let messages: Vec<_> = [("system", system_prompt)]
-                    .into_iter()
-                    .chain(messages.iter().chain(append).map(Message::to_tuple))
-                    .map(|(role, content)| {
-                        json!({
-                            "role": role,
-                            "content": content
-                        })
-                    })
+                let messages: Vec<_> = messages
+                    .iter()
+                    .chain(append)
+                    .map(Message::to_json)
                     .collect();
 
                 client
@@ -395,6 +351,7 @@ impl Reason {
                     .json(&json!({
                         "model": self.name,
                         "messages": messages,
+                        "tools": tools,
                         "stream": true,
                         "cache_prompt": true,
                     }))
@@ -402,7 +359,15 @@ impl Reason {
 
             let mut response = request.send().await?.error_for_status()?;
             let mut buffer = Vec::new();
-            let mut is_reasoning = None;
+
+            enum Mode {
+                Reasoning,
+                Messaging,
+                ToolCalling,
+            }
+
+            let mut mode = None;
+            let mut mode_started_at = Instant::now();
 
             while let Some(chunk) = response.chunk().await? {
                 buffer.extend(chunk);
@@ -418,54 +383,131 @@ impl Reason {
                 };
 
                 for line in lines {
-                    if let Ok(data) = std::str::from_utf8(line) {
-                        #[derive(Deserialize)]
-                        struct Data {
-                            choices: Vec<Choice>,
-                        }
+                    #[derive(Deserialize)]
+                    struct Data {
+                        choices: Vec<Choice>,
+                    }
 
-                        #[derive(Deserialize)]
-                        struct Choice {
-                            delta: Delta,
-                        }
+                    #[derive(Deserialize)]
+                    struct Choice {
+                        delta: Delta,
+                    }
 
-                        #[derive(Deserialize)]
-                        struct Delta {
-                            content: Option<String>,
-                        }
+                    #[derive(Deserialize)]
+                    #[serde(untagged)]
+                    enum Delta {
+                        Text { content: String },
+                        Call { tool_calls: [ToolCall; 1] },
+                    }
 
-                        if data == "data: [DONE]" {
-                            break;
-                        }
+                    #[derive(Deserialize)]
+                    #[serde(untagged)]
+                    enum ToolCall {
+                        New { id: tool::Id, function: Function },
+                        Update { function: FunctionUpdate },
+                    }
 
-                        let mut data: Data = serde_json::from_str(
-                            data.trim().strip_prefix("data: ").unwrap_or(data),
-                        )?;
+                    #[derive(Deserialize)]
+                    struct Function {
+                        name: String,
+                        arguments: String,
+                    }
 
-                        if let Some(choice) = data.choices.first_mut() {
-                            if let Some(content) = &mut choice.delta.content {
-                                match is_reasoning {
-                                    None if content.contains("<think>") => {
-                                        is_reasoning = Some(true);
-                                        *content = content.replace("<think>", "");
-                                    }
-                                    Some(true) if content.contains("</think>") => {
-                                        is_reasoning = Some(false);
-                                        *content = content.replace("</think>", "");
-                                    }
-                                    _ => {}
+                    #[derive(Deserialize)]
+                    struct FunctionUpdate {
+                        arguments: String,
+                    }
+
+                    const PREFIX: usize = b"data:".len();
+
+                    if line.len() < PREFIX {
+                        continue;
+                    }
+
+                    let Ok(data): Result<Data, _> = serde_json::from_slice(&line[PREFIX..]) else {
+                        continue;
+                    };
+
+                    let Some(choice) = data.choices.first() else {
+                        continue;
+                    };
+
+                    match &choice.delta {
+                        Delta::Text { content } => {
+                            match mode {
+                                None | Some(Mode::Messaging) if content.contains("<think>") => {
+                                    mode = Some(Mode::Reasoning);
+                                    mode_started_at = Instant::now();
+
+                                    sender
+                                        .send(Event::OutputAdded {
+                                            output: Output::Reasoning(Reasoning::default()),
+                                        })
+                                        .await;
+
+                                    continue;
                                 }
+                                Some(Mode::Reasoning) if content.contains("</think>") => {
+                                    mode = Some(Mode::Messaging);
+                                    mode_started_at = Instant::now();
 
+                                    continue;
+                                }
+                                None => {
+                                    mode = Some(Mode::Messaging);
+                                    mode_started_at = Instant::now();
+
+                                    sender
+                                        .send(Event::OutputAdded {
+                                            output: Output::Message(String::new()),
+                                        })
+                                        .await;
+                                }
+                                _ => {}
+                            }
+
+                            if let Some(Mode::Reasoning | Mode::Messaging) = mode {
                                 let _ = sender
-                                    .send(if is_reasoning.unwrap_or_default() {
-                                        Token::Reasoning(content.clone())
-                                    } else {
-                                        Token::Talking(content.clone())
+                                    .send(Event::TextChanged {
+                                        delta: content.clone(),
+                                        duration: mode_started_at.elapsed(),
                                     })
                                     .await;
                             }
                         }
-                    };
+                        Delta::Call { tool_calls } => {
+                            if !matches!(mode, Some(Mode::ToolCalling)) {
+                                mode = Some(Mode::ToolCalling);
+                                mode_started_at = Instant::now();
+
+                                sender
+                                    .send(Event::OutputAdded {
+                                        output: Output::ToolCalls(Vec::new()),
+                                    })
+                                    .await;
+                            }
+
+                            match &tool_calls[0] {
+                                ToolCall::New { id, function } => {
+                                    sender
+                                        .send(Event::ToolCallAdded {
+                                            id: id.clone(),
+                                            name: function.name.clone(),
+                                            arguments: function.arguments.clone(),
+                                        })
+                                        .await;
+                                }
+                                ToolCall::Update { function } => {
+                                    sender
+                                        .send(Event::ArgumentsChanged {
+                                            delta: function.arguments.clone(),
+                                            duration: mode_started_at.elapsed(),
+                                        })
+                                        .await;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 buffer = last_line.to_vec();
@@ -518,37 +560,176 @@ impl Backend {
 #[derive(Debug, Clone)]
 pub enum Message {
     System(String),
-    Assistant(String),
+    Assistant(Output),
     User(String),
+    Tool(tool::Response),
 }
 
 impl Message {
-    pub fn to_tuple(&self) -> (&'static str, &str) {
+    pub fn system(prompt: impl AsRef<str>) -> Self {
+        Self::System(prompt.as_ref().to_owned())
+    }
+
+    pub fn user(prompt: impl AsRef<str>) -> Self {
+        Self::User(prompt.as_ref().to_owned())
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
         match self {
-            Self::System(content) => ("system", content),
-            Self::Assistant(content) => ("assistant", content),
-            Self::User(content) => ("user", content),
+            Self::System(content) => json!({
+                "role": "system",
+                "content": content,
+            }),
+            Self::Assistant(output) => match output {
+                Output::Reasoning(reasoning) => json!({
+                    "role": "assistant",
+                    "content": reasoning.text,
+                }),
+                Output::Message(text) => json!({
+                    "role": "assistant",
+                    "content": text,
+                }),
+                Output::ToolCalls(calls) => {
+                    let tool_calls: Vec<_> = calls
+                        .iter()
+                        .map(|call| match call {
+                            tool::Call::Function {
+                                id,
+                                name,
+                                arguments,
+                            } => json!({
+                                "id": id,
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "arguments": arguments,
+                                }
+                            }),
+                        })
+                        .collect();
+
+                    json!({
+                        "role": "assistant",
+                        "tool_calls": tool_calls,
+                    })
+                }
+            },
+            Self::User(content) => json!({
+                "role": "user",
+                "content": content,
+            }),
+            Self::Tool(response) => json!({
+                "role": "tool",
+                "tool_call_id": response.id,
+                "content": response.content,
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Reply {
+    pub outputs: Vec<Output>,
+}
+
+impl Reply {
+    pub fn update(&mut self, event: &Event) {
+        match event {
+            Event::OutputAdded { output } => {
+                self.outputs.push(output.clone());
+            }
+            Event::TextChanged { delta, duration } => match self.outputs.last_mut() {
+                Some(Output::Reasoning(reasoning)) => {
+                    reasoning.text.push_str(delta);
+                    reasoning.duration = *duration;
+                }
+                Some(Output::Message(text)) => {
+                    text.push_str(delta);
+                }
+                None | Some(Output::ToolCalls(_)) => {}
+            },
+            Event::ToolCallAdded {
+                id,
+                name,
+                arguments,
+            } => {
+                let Some(Output::ToolCalls(calls)) = self.outputs.last_mut() else {
+                    return;
+                };
+
+                calls.push(tool::Call::Function {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: arguments.clone(),
+                });
+            }
+            Event::ArgumentsChanged { delta, .. } => {
+                let Some(Output::ToolCalls(calls)) = self.outputs.last_mut() else {
+                    return;
+                };
+
+                let Some(tool::Call::Function { arguments, .. }) = calls.last_mut() else {
+                    return;
+                };
+
+                arguments.push_str(delta);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Output {
+    Reasoning(Reasoning),
+    Message(String),
+    ToolCalls(Vec<tool::Call>),
+}
+
+impl Output {
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Output::Reasoning(reasoning) => Some(&reasoning.text),
+            Output::Message(text) => Some(text),
+            Output::ToolCalls(_) => None,
         }
     }
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct Reply {
-    pub reasoning: Option<Reasoning>,
-    pub content: String,
-    pub last_token: Option<String>,
-}
-
-#[derive(Debug, Clone)]
 pub struct Reasoning {
-    pub content: String,
+    pub text: String,
     pub duration: Duration,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Token {
-    Reasoning(String),
-    Talking(String),
+#[derive(Debug, Clone)]
+pub enum Event {
+    OutputAdded {
+        output: Output,
+    },
+    TextChanged {
+        delta: String,
+        duration: Duration,
+    },
+    ToolCallAdded {
+        id: tool::Id,
+        name: String,
+        arguments: String,
+    },
+    ArgumentsChanged {
+        delta: String,
+        duration: Duration,
+    },
+}
+
+impl Event {
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Event::OutputAdded { output, .. } => output.text(),
+            Event::TextChanged { delta, .. } => Some(delta),
+            Event::ToolCallAdded { .. } => None,
+            Event::ArgumentsChanged { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -579,7 +760,7 @@ impl Server {
 
         let server = process::Command::new(executable)
             .args(Self::parse_args(&format!(
-                "--model {model} --port {port} --host 127.0.0.1 {gpu_flags}",
+                "--jinja --model {model} --port {port} --host 127.0.0.1 {gpu_flags}",
                 port = Self::PORT,
                 model = model.as_ref().display()
             )))
