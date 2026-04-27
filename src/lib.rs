@@ -281,10 +281,10 @@ impl Reason {
                     loop {
                         time::sleep(Duration::from_secs(1)).await;
 
-                        if let Ok(response) = reqwest::get(format!("{address}/health")).await {
-                            if response.error_for_status().is_ok() {
-                                return true;
-                            }
+                        if let Ok(response) = reqwest::get(format!("{address}/health")).await
+                            && response.error_for_status().is_ok()
+                        {
+                            return true;
                         }
                     }
                 }
