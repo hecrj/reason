@@ -1,8 +1,8 @@
 [package]
 name = "reason"
-version = "0.1.0-dev"
+version = "0.1.0"
 edition = "2024"
-description = "Coming soon"
+description = "A library for integrating LLMs in your Rust applications"
 license = "MIT"
 
 [features]
@@ -13,7 +13,7 @@ techne = ["dep:techne-mcp"]
 futures-util = "0.3"
 serde_json = "1"
 sipper = "0.1"
-skema = "0.1.0-dev"
+skema = "0.1"
 thiserror = "2"
 url = "2.5"
 
@@ -29,7 +29,7 @@ tokio.features = ["fs", "process"]
 tokio-stream.version = "0.1"
 tokio-stream.features = ["io-util"]
 
-techne-mcp.version = "0.1.0-dev.1"
+techne-mcp.version = "0.1"
 techne-mcp.optional = true
 
 [dev-dependencies]
@@ -38,5 +38,5 @@ anyhow = "1"
 tokio.version = "1.46"
 tokio.features = ["rt", "rt-multi-thread", "macros"]
 
-techne.version = "0.1.0-dev.2"
+techne.version = "0.1"
 techne.features = ["client", "server", "http"]

@@ -777,7 +777,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "reason"
-version = "0.1.0-dev"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -1027,9 +1027,9 @@ dependencies = [
 
 [[package]]
 name = "skema"
-version = "0.1.0-dev"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f86860e467f2202e32d6ddd977227c1102e6e65317a9c25cf7a07a20f693263"
+checksum = "5f721c1cf4551f5e3fdd2a07f35e721d0ee29fac710b93be68078d03cd94f6b0"
 dependencies = [
  "serde",
 ]
@@ -1122,9 +1122,9 @@ dependencies = [
 
 [[package]]
 name = "techne"
-version = "0.1.0-dev.2"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a6d8fe65bf59bb2ea357984fb3cbfa1379f80ec97af575a7cca6ac7c4257db0"
+checksum = "5ad572edbb8381ed61c6cd6a652f6f54ffa4fc02ab9deac5c3408e928881dfa0"
 dependencies = [
  "techne-client",
  "techne-mcp",
@@ -1133,9 +1133,9 @@ dependencies = [
 
 [[package]]
 name = "techne-client"
-version = "0.1.0-dev.2"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ad25fcad4972d1a5fe5bf2bb2e1d08aac233e3ac391033f4c6299459c778057"
+checksum = "f8937a69b10958acf77c818add7208e3993bdbe81e5296f28209ac2c567e7448"
 dependencies = [
  "futures",
  "log",
@@ -1148,9 +1148,9 @@ dependencies = [
 
 [[package]]
 name = "techne-mcp"
-version = "0.1.0-dev.2"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0af8accae976edb1fddb5129c32b3360820fb945ea9c81202bac103f644e821"
+checksum = "14023a77d04fc6d9cd6300979faf9350edac33c2db67851add2371af8ff706e8"
 dependencies = [
  "bytes",
  "serde",
@@ -1160,9 +1160,9 @@ dependencies = [
 
 [[package]]
 name = "techne-server"
-version = "0.1.0-dev.2"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "063e10bdbe8d93ad07bfbbe056cad8eadeb87cc2f7f8e073487735cfe1bc5a54"
+checksum = "f99aecc2dbc80df0e18d6f177cb86ec07c03d28216fe529d4a978c0b09f600cd"
 dependencies = [
  "futures",
  "http",
