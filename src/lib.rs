@@ -12,7 +12,7 @@ use tokio::time;
 
 use core::fmt;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub use reqwest::IntoUrl;
 pub use url::Url;
@@ -25,6 +25,12 @@ pub struct Reason {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Model(String);
+
+impl Model {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 impl fmt::Display for Model {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -39,26 +45,30 @@ pub enum Source {
 }
 
 impl Reason {
-    pub async fn connect(url: impl IntoUrl) -> Result<Self, Error> {
-        let url = url.into_url()?;
+    pub fn connect(url: impl IntoUrl) -> impl Future<Output = Result<Self, Error>> + 'static {
+        let url = url.into_url();
         let client = reqwest::Client::new();
 
-        loop {
-            if client
-                .get(format!("{url}v1/models"))
-                .timeout(Duration::from_secs(5))
-                .send()
-                .await?
-                .error_for_status()
-                .is_ok()
-            {
-                break;
+        async move {
+            let url = url?;
+
+            loop {
+                if client
+                    .get(format!("{url}v1/models"))
+                    .timeout(Duration::from_secs(5))
+                    .send()
+                    .await?
+                    .error_for_status()
+                    .is_ok()
+                {
+                    break;
+                }
+
+                time::sleep(Duration::from_secs(1)).await;
             }
 
-            time::sleep(Duration::from_secs(1)).await;
+            Ok(Self { client, url })
         }
-
-        Ok(Self { client, url })
     }
 
     pub fn url(&self) -> &Url {
@@ -104,14 +114,14 @@ impl Reason {
     ) -> impl Straw<Reply, Event, Error> {
         sipper(move |mut progress| async move {
             let mut completion = self.complete(model, messages, tools).pin();
-            let mut reply = Reply {
-                outputs: Vec::new(),
-            };
+            let mut reply = Reply::default();
 
             while let Some(event) = completion.sip().await {
                 reply.update(&event);
                 progress.send(event).await;
             }
+
+            completion.await?;
 
             Ok(reply)
         })
@@ -143,15 +153,6 @@ impl Reason {
             let mut response = request.send().await?.error_for_status()?;
             let mut buffer = Vec::new();
 
-            enum Mode {
-                Reasoning,
-                Messaging,
-                ToolCalling,
-            }
-
-            let mut mode = None;
-            let mut mode_started_at = Instant::now();
-
             while let Some(chunk) = response.chunk().await? {
                 buffer.extend(chunk);
 
@@ -180,6 +181,7 @@ impl Reason {
                     #[serde(untagged)]
                     enum Delta {
                         Text { content: String },
+                        Reasoning { reasoning_content: String },
                         Call { tool_calls: [ToolCall; 1] },
                     }
 
@@ -207,6 +209,10 @@ impl Reason {
                         continue;
                     }
 
+                    if log::log_enabled!(log::Level::Debug) {
+                        log::debug!("{}", str::from_utf8(line).unwrap_or_default());
+                    }
+
                     let Ok(data): Result<Data, _> = serde_json::from_slice(&line[PREFIX..]) else {
                         continue;
                     };
@@ -216,80 +222,38 @@ impl Reason {
                     };
 
                     match &choice.delta {
+                        Delta::Reasoning { reasoning_content } => {
+                            let _ = sender
+                                .send(Event::ReasoningChanged {
+                                    delta: reasoning_content.clone(),
+                                })
+                                .await;
+                        }
                         Delta::Text { content } => {
-                            match mode {
-                                None | Some(Mode::Messaging) if content.contains("<think>") => {
-                                    mode = Some(Mode::Reasoning);
-                                    mode_started_at = Instant::now();
-
-                                    sender
-                                        .send(Event::OutputAdded {
-                                            output: Output::Reasoning(Reasoning::default()),
-                                        })
-                                        .await;
-
-                                    continue;
-                                }
-                                Some(Mode::Reasoning) if content.contains("</think>") => {
-                                    mode = Some(Mode::Messaging);
-                                    mode_started_at = Instant::now();
-
-                                    continue;
-                                }
-                                None => {
-                                    mode = Some(Mode::Messaging);
-                                    mode_started_at = Instant::now();
-
-                                    sender
-                                        .send(Event::OutputAdded {
-                                            output: Output::Message(String::new()),
-                                        })
-                                        .await;
-                                }
-                                _ => {}
-                            }
-
-                            if let Some(Mode::Reasoning | Mode::Messaging) = mode {
-                                let _ = sender
-                                    .send(Event::TextChanged {
-                                        delta: content.clone(),
-                                        duration: mode_started_at.elapsed(),
-                                    })
-                                    .await;
-                            }
+                            let _ = sender
+                                .send(Event::ContentChanged {
+                                    delta: content.clone(),
+                                })
+                                .await;
                         }
-                        Delta::Call { tool_calls } => {
-                            if !matches!(mode, Some(Mode::ToolCalling)) {
-                                mode = Some(Mode::ToolCalling);
-                                mode_started_at = Instant::now();
-
+                        Delta::Call { tool_calls } => match &tool_calls[0] {
+                            ToolCall::New { id, function } => {
                                 sender
-                                    .send(Event::OutputAdded {
-                                        output: Output::ToolCalls(Vec::new()),
+                                    .send(Event::ToolCallAdded(tool::Call {
+                                        id: id.clone(),
+                                        name: function.name.clone(),
+                                        arguments: function.arguments.clone(),
+                                    }))
+                                    .await;
+                            }
+                            ToolCall::Update { function } => {
+                                sender
+                                    .send(Event::ArgumentsChanged {
+                                        delta: function.arguments.clone(),
                                     })
                                     .await;
                             }
-
-                            match &tool_calls[0] {
-                                ToolCall::New { id, function } => {
-                                    sender
-                                        .send(Event::ToolCallAdded {
-                                            id: id.clone(),
-                                            name: function.name.clone(),
-                                            arguments: function.arguments.clone(),
-                                        })
-                                        .await;
-                                }
-                                ToolCall::Update { function } => {
-                                    sender
-                                        .send(Event::ArgumentsChanged {
-                                            delta: function.arguments.clone(),
-                                            duration: mode_started_at.elapsed(),
-                                        })
-                                        .await;
-                                }
-                            }
-                        }
+                        },
                     }
                 }
 
@@ -304,7 +268,7 @@ impl Reason {
 #[derive(Debug, Clone)]
 pub enum Message {
     System(String),
-    Assistant(Output),
+    Assistant(Reply),
     User(String),
     Tool(tool::Response),
 }
@@ -324,40 +288,50 @@ impl Message {
                 "role": "system",
                 "content": content,
             }),
-            Self::Assistant(output) => match output {
-                Output::Reasoning(reasoning) => json!({
-                    "role": "assistant",
-                    "content": reasoning.text,
-                }),
-                Output::Message(text) => json!({
-                    "role": "assistant",
-                    "content": text,
-                }),
-                Output::ToolCalls(calls) => {
-                    let tool_calls: Vec<_> = calls
+            Self::Assistant(reply) => {
+                let mut message = serde_json::Map::new();
+
+                message.insert(
+                    "role".to_owned(),
+                    serde_json::Value::String("assistant".to_owned()),
+                );
+
+                if !reply.reasoning.is_empty() {
+                    message.insert(
+                        "reasoning_content".to_owned(),
+                        serde_json::Value::String(reply.reasoning.clone()),
+                    );
+                }
+
+                message.insert(
+                    "content".to_owned(),
+                    serde_json::Value::String(reply.content.clone()),
+                );
+
+                if !reply.tool_calls.is_empty() {
+                    let tool_calls: Vec<_> = reply
+                        .tool_calls
                         .iter()
-                        .map(|call| match call {
-                            tool::Call::Function {
-                                id,
-                                name,
-                                arguments,
-                            } => json!({
-                                "id": id,
+                        .map(|call| {
+                            json!({
+                                "id": call.id,
                                 "type": "function",
                                 "function": {
-                                    "name": name,
-                                    "arguments": arguments,
+                                    "name": call.name,
+                                    "arguments": call.arguments,
                                 }
-                            }),
+                            })
                         })
                         .collect();
 
-                    json!({
-                        "role": "assistant",
-                        "tool_calls": tool_calls,
-                    })
+                    message.insert(
+                        "tool_calls".to_owned(),
+                        serde_json::Value::Array(tool_calls),
+                    );
                 }
-            },
+
+                serde_json::Value::Object(message)
+            }
             Self::User(content) => json!({
                 "role": "user",
                 "content": content,
@@ -371,107 +345,51 @@ impl Message {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Reply {
-    pub outputs: Vec<Output>,
+    pub reasoning: String,
+    pub content: String,
+    pub tool_calls: Vec<tool::Call>,
 }
 
 impl Reply {
     pub fn update(&mut self, event: &Event) {
         match event {
-            Event::OutputAdded { output } => {
-                self.outputs.push(output.clone());
+            Event::ReasoningChanged { delta } => {
+                self.reasoning.push_str(delta);
             }
-            Event::TextChanged { delta, duration } => match self.outputs.last_mut() {
-                Some(Output::Reasoning(reasoning)) => {
-                    reasoning.text.push_str(delta);
-                    reasoning.duration = *duration;
-                }
-                Some(Output::Message(text)) => {
-                    text.push_str(delta);
-                }
-                None | Some(Output::ToolCalls(_)) => {}
-            },
-            Event::ToolCallAdded {
-                id,
-                name,
-                arguments,
-            } => {
-                let Some(Output::ToolCalls(calls)) = self.outputs.last_mut() else {
-                    return;
-                };
-
-                calls.push(tool::Call::Function {
-                    id: id.clone(),
-                    name: name.clone(),
-                    arguments: arguments.clone(),
-                });
+            Event::ContentChanged { delta } => {
+                self.content.push_str(delta);
+            }
+            Event::ToolCallAdded(call) => {
+                self.tool_calls.push(call.clone());
             }
             Event::ArgumentsChanged { delta, .. } => {
-                let Some(Output::ToolCalls(calls)) = self.outputs.last_mut() else {
+                let Some(call) = self.tool_calls.last_mut() else {
                     return;
                 };
 
-                let Some(tool::Call::Function { arguments, .. }) = calls.last_mut() else {
-                    return;
-                };
-
-                arguments.push_str(delta);
+                call.arguments.push_str(delta);
             }
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub enum Output {
-    Reasoning(Reasoning),
-    Message(String),
-    ToolCalls(Vec<tool::Call>),
-}
-
-impl Output {
-    pub fn text(&self) -> Option<&str> {
-        match self {
-            Output::Reasoning(reasoning) => Some(&reasoning.text),
-            Output::Message(text) => Some(text),
-            Output::ToolCalls(_) => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Reasoning {
-    pub text: String,
-    pub duration: Duration,
 }
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    OutputAdded {
-        output: Output,
-    },
-    TextChanged {
-        delta: String,
-        duration: Duration,
-    },
-    ToolCallAdded {
-        id: tool::Id,
-        name: String,
-        arguments: String,
-    },
-    ArgumentsChanged {
-        delta: String,
-        duration: Duration,
-    },
+    ReasoningChanged { delta: String },
+    ContentChanged { delta: String },
+    ToolCallAdded(tool::Call),
+    ArgumentsChanged { delta: String },
 }
 
 impl Event {
     pub fn text(&self) -> Option<&str> {
         match self {
-            Event::OutputAdded { output, .. } => output.text(),
-            Event::TextChanged { delta, .. } => Some(delta),
-            Event::ToolCallAdded { .. } => None,
-            Event::ArgumentsChanged { .. } => None,
+            Event::ReasoningChanged { delta, .. } | Event::ContentChanged { delta, .. } => {
+                Some(delta)
+            }
+            Event::ToolCallAdded { .. } | Event::ArgumentsChanged { .. } => None,
         }
     }
 }

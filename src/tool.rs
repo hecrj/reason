@@ -16,12 +16,10 @@ pub struct Function {
 }
 
 #[derive(Debug, Clone)]
-pub enum Call {
-    Function {
-        id: Id,
-        name: String,
-        arguments: String,
-    },
+pub struct Call {
+    pub id: Id,
+    pub name: String,
+    pub arguments: String,
 }
 
 #[derive(Debug, Clone)]

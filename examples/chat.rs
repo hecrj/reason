@@ -84,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         let reply = reply.await?;
-        messages.extend(reply.outputs.into_iter().map(Message::Assistant));
+        messages.push(Message::Assistant(reply));
 
         println!("");
     }

@@ -1,5 +1,5 @@
 use reason::tool;
-use reason::{Message, Output, Reason, Tool};
+use reason::{Message, Reason, Tool};
 
 use anyhow::bail;
 use sipper::Sipper;
@@ -118,49 +118,44 @@ pub async fn main() -> anyhow::Result<()> {
         let reply = reply.await?;
         is_processing = false;
 
-        for output in reply.outputs {
-            messages.push(Message::Assistant(output.clone()));
+        let tool_calls = reply.tool_calls.clone();
+        messages.push(Message::Assistant(reply));
 
-            let Output::ToolCalls(tools) = output else {
+        for tool in tool_calls {
+            let tool::Call {
+                id,
+                name,
+                arguments,
+            } = tool;
+
+            let Ok(arguments) = serde_json::from_str(&arguments) else {
                 continue;
             };
 
-            for tool in tools {
-                let tool::Call::Function {
-                    id,
-                    name,
-                    arguments,
-                } = tool;
+            println!("=> {name}: {arguments}");
 
-                let Ok(arguments) = serde_json::from_str(&arguments) else {
-                    continue;
-                };
+            let response = mcp.call_tool(name, arguments).await?;
 
-                println!("=> {name}: {arguments}");
+            let content = match response.content {
+                mcp::server::Content::Unstructured(items) => items
+                    .into_iter()
+                    .filter_map(|item| {
+                        if let mcp::server::content::Unstructured::Text { text } = item {
+                            Some(text)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+                mcp::server::Content::Structured(value) => serde_json::to_string(&value)?,
+            };
 
-                let response = mcp.call_tool(name, arguments).await?;
+            println!("<= {content}");
+            println!("");
 
-                let content = match response.content {
-                    mcp::server::Content::Unstructured(items) => items
-                        .into_iter()
-                        .filter_map(|item| {
-                            if let mcp::server::content::Unstructured::Text { text } = item {
-                                Some(text)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect(),
-                    mcp::server::Content::Structured(value) => serde_json::to_string(&value)?,
-                };
+            messages.push(Message::Tool(tool::Response { id, content }));
 
-                println!("<= {content}");
-                println!("");
-
-                messages.push(Message::Tool(tool::Response { id, content }));
-
-                is_processing = true;
-            }
+            is_processing = true;
         }
     }
 }
