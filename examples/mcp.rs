@@ -101,7 +101,7 @@ pub async fn main() -> anyhow::Result<()> {
             message.clear();
         }
 
-        let mut reply = reason.reply(model, &messages, &[], &tools).pin();
+        let mut reply = reason.reply(model, &messages, &tools).pin();
 
         println!("");
 

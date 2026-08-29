@@ -100,11 +100,10 @@ impl Reason {
         &self,
         model: &Model,
         messages: &[Message],
-        append: &[Message],
         tools: &[Tool],
     ) -> impl Straw<Reply, Event, Error> {
         sipper(move |mut progress| async move {
-            let mut completion = self.complete(model, messages, append, tools).pin();
+            let mut completion = self.complete(model, messages, tools).pin();
             let mut reply = Reply {
                 outputs: Vec::new(),
             };
@@ -122,18 +121,13 @@ impl Reason {
         &self,
         model: &Model,
         messages: &[Message],
-        append: &[Message],
         tools: &[Tool],
     ) -> impl Straw<(), Event, Error> {
         sipper(move |mut sender| async move {
             let client = reqwest::Client::new();
 
             let request = {
-                let messages: Vec<_> = messages
-                    .iter()
-                    .chain(append)
-                    .map(Message::to_json)
-                    .collect();
+                let messages: Vec<_> = messages.iter().map(Message::to_json).collect();
 
                 client
                     .post(format!("{url}v1/chat/completions", url = self.url,))

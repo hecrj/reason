@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
         messages.push(Message::User(message.trim().to_owned()));
         message.clear();
 
-        let mut reply = reason.reply(model, &messages, &[], &[]).pin();
+        let mut reply = reason.reply(model, &messages, &[]).pin();
 
         println!("");
 
