@@ -12,11 +12,11 @@ use std::io::{self, Write};
 
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {
-    let Some(model) = env::args().nth(1) else {
-        bail!("Model argument not provided!");
+    let Some(url) = env::args().nth(1) else {
+        bail!("URL argument not provided!");
     };
 
-    if model == "--server" {
+    if url == "--server" {
         return Ok(run_mcp_server().await?);
     }
 
@@ -62,20 +62,15 @@ pub async fn main() -> anyhow::Result<()> {
     }
 
     println!("");
-    println!("- Booting {model}...");
+    println!("- Connecting to {url}");
 
-    let mut boot = Reason::boot(model, reason::Backend::Cuda).pin();
+    let reason = Reason::connect(url).await?;
+    let models = reason.list_models().await?;
 
-    while let Some(progress) = boot.sip().await {
-        match progress {
-            reason::BootEvent::Progressed { stage, percent } => {
-                println!("- {stage} ({percent}%)");
-            }
-            reason::BootEvent::Logged(_log) => {}
-        }
-    }
-
-    let reason = boot.await?;
+    let Some(model) = models.first() else {
+        println!("No models found!");
+        std::process::exit(1)
+    };
 
     println!("");
     println!("-------------------");
@@ -106,7 +101,7 @@ pub async fn main() -> anyhow::Result<()> {
             message.clear();
         }
 
-        let mut reply = reason.reply(&messages, &[], &tools).pin();
+        let mut reply = reason.reply(model, &messages, &[], &tools).pin();
 
         println!("");
 

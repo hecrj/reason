@@ -34,9 +34,14 @@ techne-mcp.optional = true
 
 [dev-dependencies]
 anyhow = "1"
+llama-server = "0.2.0-dev"
 
 tokio.version = "1.46"
 tokio.features = ["rt", "rt-multi-thread", "macros"]
 
 techne.version = "0.1"
 techne.features = ["client", "server", "http"]
+
+[patch.crates-io]
+llama-server.git = "https://github.com/hecrj/llama-server.git"
+llama-server.rev = "bceaac8d5653853701482a5048db64109fc5685c"
