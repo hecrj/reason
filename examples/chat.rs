@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Choose a model:");
 
     for (i, model) in models.iter().enumerate() {
-        println!("  {n}. {model}", n = i + 1);
+        println!("  {n}. {id}", n = i + 1, id = model.id);
     }
 
     let model = {
@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
         messages.push(Message::User(message.trim().to_owned()));
         message.clear();
 
-        let mut reply = reason.reply(model, &messages, &[]).pin();
+        let mut reply = reason.reply(&model.id, &messages, &[]).pin();
 
         println!("");
 

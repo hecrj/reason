@@ -1,8 +1,10 @@
 mod error;
 
+pub mod model;
 pub mod tool;
 
 pub use error::Error;
+pub use model::Model;
 pub use tool::Tool;
 
 use serde::Deserialize;
@@ -10,7 +12,6 @@ use serde_json::json;
 use sipper::{Sipper, Straw, sipper};
 use tokio::time;
 
-use core::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -21,21 +22,6 @@ pub use url::Url;
 pub struct Reason {
     client: reqwest::Client,
     url: Url,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Model(String);
-
-impl Model {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for Model {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +74,13 @@ impl Reason {
         #[derive(Deserialize)]
         struct ResponseModel {
             id: String,
+            #[serde(default)]
+            meta: Option<Meta>,
+        }
+
+        #[derive(Deserialize)]
+        struct Meta {
+            n_ctx: u64,
         }
 
         let models: Response = self
@@ -102,13 +95,16 @@ impl Reason {
         Ok(models
             .data
             .into_iter()
-            .map(|model| Model(model.id))
+            .map(|model| Model {
+                id: model::Id(model.id),
+                context_size: model.meta.map(|meta| meta.n_ctx),
+            })
             .collect())
     }
 
     pub fn reply(
         &self,
-        model: &Model,
+        model: &model::Id,
         messages: &[Message],
         tools: &[Tool],
     ) -> impl Straw<Reply, Event, Error> {
@@ -129,7 +125,7 @@ impl Reason {
 
     pub fn complete(
         &self,
-        model: &Model,
+        model: &model::Id,
         messages: &[Message],
         tools: &[Tool],
     ) -> impl Straw<(), Event, Error> {
