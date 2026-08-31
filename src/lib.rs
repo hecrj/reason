@@ -147,6 +147,8 @@ impl Reason {
                         "tools": tools,
                         "stream": true,
                         "cache_prompt": true,
+                        "timings_per_token": true,
+                        "return_progress": true,
                     }))
             };
 
@@ -170,16 +172,29 @@ impl Reason {
                     #[derive(Deserialize)]
                     struct Data {
                         choices: Vec<Choice>,
+                        #[serde(default)]
+                        timings: Option<Timings_>,
                     }
 
                     #[derive(Deserialize)]
                     struct Choice {
-                        delta: Delta,
+                        delta: Delta_,
+                    }
+
+                    #[derive(Deserialize)]
+                    struct Timings_ {
+                        cache_n: u64,
+                        prompt_n: u64,
+                        prompt_ms: f64,
+                        prompt_per_token_ms: f64,
+                        predicted_n: u64,
+                        predicted_ms: f64,
+                        predicted_per_token_ms: f64,
                     }
 
                     #[derive(Deserialize)]
                     #[serde(untagged)]
-                    enum Delta {
+                    enum Delta_ {
                         Text { content: String },
                         Reasoning { reasoning_content: String },
                         Call { tool_calls: [ToolCall; 1] },
@@ -205,12 +220,12 @@ impl Reason {
 
                     const PREFIX: usize = b"data:".len();
 
-                    if line.len() < PREFIX {
-                        continue;
+                    if log::log_enabled!(log::Level::Debug) {
+                        log::debug!("{}", String::from_utf8_lossy(line));
                     }
 
-                    if log::log_enabled!(log::Level::Debug) {
-                        log::debug!("{}", str::from_utf8(line).unwrap_or_default());
+                    if line.len() < PREFIX {
+                        continue;
                     }
 
                     let Ok(data): Result<Data, _> = serde_json::from_slice(&line[PREFIX..]) else {
@@ -221,40 +236,38 @@ impl Reason {
                         continue;
                     };
 
-                    match &choice.delta {
-                        Delta::Reasoning { reasoning_content } => {
-                            let _ = sender
-                                .send(Event::ReasoningChanged {
-                                    delta: reasoning_content.clone(),
-                                })
-                                .await;
+                    let delta = match &choice.delta {
+                        Delta_::Reasoning { reasoning_content } => {
+                            Delta::ReasoningChanged(reasoning_content.clone())
                         }
-                        Delta::Text { content } => {
-                            let _ = sender
-                                .send(Event::ContentChanged {
-                                    delta: content.clone(),
-                                })
-                                .await;
-                        }
-                        Delta::Call { tool_calls } => match &tool_calls[0] {
-                            ToolCall::New { id, function } => {
-                                sender
-                                    .send(Event::ToolCallAdded(tool::Call {
-                                        id: id.clone(),
-                                        name: function.name.clone(),
-                                        arguments: function.arguments.clone(),
-                                    }))
-                                    .await;
-                            }
+                        Delta_::Text { content } => Delta::ContentChanged(content.clone()),
+                        Delta_::Call { tool_calls } => match &tool_calls[0] {
+                            ToolCall::New { id, function } => Delta::ToolCallAdded(tool::Call {
+                                id: id.clone(),
+                                name: function.name.clone(),
+                                arguments: function.arguments.clone(),
+                            }),
                             ToolCall::Update { function } => {
-                                sender
-                                    .send(Event::ArgumentsChanged {
-                                        delta: function.arguments.clone(),
-                                    })
-                                    .await;
+                                Delta::ArgumentsChanged(function.arguments.clone())
                             }
                         },
-                    }
+                    };
+
+                    let timings = data.timings.map(|timings| Timings {
+                        cached: timings.cache_n,
+                        prompt: Generation {
+                            amount: timings.prompt_n,
+                            total: Duration::from_secs_f64(timings.prompt_ms / 1_000.),
+                            token: Duration::from_secs_f64(timings.prompt_per_token_ms / 1_000.),
+                        },
+                        predicted: Generation {
+                            amount: timings.predicted_n,
+                            total: Duration::from_secs_f64(timings.predicted_ms / 1_000.),
+                            token: Duration::from_secs_f64(timings.predicted_per_token_ms / 1_000.),
+                        },
+                    });
+
+                    sender.send(Event { delta, timings }).await;
                 }
 
                 buffer = last_line.to_vec();
@@ -354,17 +367,17 @@ pub struct Reply {
 
 impl Reply {
     pub fn update(&mut self, event: &Event) {
-        match event {
-            Event::ReasoningChanged { delta } => {
+        match &event.delta {
+            Delta::ReasoningChanged(delta) => {
                 self.reasoning.push_str(delta);
             }
-            Event::ContentChanged { delta } => {
+            Delta::ContentChanged(delta) => {
                 self.content.push_str(delta);
             }
-            Event::ToolCallAdded(call) => {
+            Delta::ToolCallAdded(call) => {
                 self.tool_calls.push(call.clone());
             }
-            Event::ArgumentsChanged { delta, .. } => {
+            Delta::ArgumentsChanged(delta) => {
                 let Some(call) = self.tool_calls.last_mut() else {
                     return;
                 };
@@ -376,20 +389,38 @@ impl Reply {
 }
 
 #[derive(Debug, Clone)]
-pub enum Event {
-    ReasoningChanged { delta: String },
-    ContentChanged { delta: String },
-    ToolCallAdded(tool::Call),
-    ArgumentsChanged { delta: String },
+pub struct Event {
+    pub delta: Delta,
+    pub timings: Option<Timings>,
 }
 
-impl Event {
+#[derive(Debug, Clone)]
+pub enum Delta {
+    ReasoningChanged(String),
+    ContentChanged(String),
+    ToolCallAdded(tool::Call),
+    ArgumentsChanged(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timings {
+    pub cached: u64,
+    pub prompt: Generation,
+    pub predicted: Generation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Generation {
+    pub amount: u64,
+    pub total: Duration,
+    pub token: Duration,
+}
+
+impl Delta {
     pub fn text(&self) -> Option<&str> {
         match self {
-            Event::ReasoningChanged { delta, .. } | Event::ContentChanged { delta, .. } => {
-                Some(delta)
-            }
-            Event::ToolCallAdded { .. } | Event::ArgumentsChanged { .. } => None,
+            Self::ReasoningChanged(delta) | Self::ContentChanged(delta) => Some(delta),
+            Self::ToolCallAdded(_) | Self::ArgumentsChanged(_) => None,
         }
     }
 }

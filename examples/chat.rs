@@ -76,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
         println!("");
 
         while let Some(event) = reply.sip().await {
-            if let Some(text) = event.text() {
+            if let Some(text) = event.delta.text() {
                 print!("{text}");
             }
 

@@ -28,7 +28,7 @@ pub struct Response {
     pub content: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Id(String);
 
 #[cfg(feature = "techne")]
