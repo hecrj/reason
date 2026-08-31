@@ -167,9 +167,17 @@ impl Reason {
                 for line in lines {
                     #[derive(Deserialize)]
                     struct Data {
-                        choices: Vec<Choice>,
+                        #[serde(flatten)]
+                        kind: Kind,
                         #[serde(default)]
                         timings: Option<Timings_>,
+                    }
+
+                    #[derive(Deserialize)]
+                    #[serde(untagged)]
+                    enum Kind {
+                        Choices { choices: Vec<Choice> },
+                        PromptProgress { prompt_progress: PromptProgress },
                     }
 
                     #[derive(Deserialize)]
@@ -214,6 +222,13 @@ impl Reason {
                         arguments: String,
                     }
 
+                    #[derive(Deserialize)]
+                    struct PromptProgress {
+                        total: u64,
+                        cache: u64,
+                        processed: u64,
+                    }
+
                     const PREFIX: usize = b"data:".len();
 
                     if log::log_enabled!(log::Level::Debug) {
@@ -226,27 +241,6 @@ impl Reason {
 
                     let Ok(data): Result<Data, _> = serde_json::from_slice(&line[PREFIX..]) else {
                         continue;
-                    };
-
-                    let Some(choice) = data.choices.first() else {
-                        continue;
-                    };
-
-                    let delta = match &choice.delta {
-                        Delta_::Reasoning { reasoning_content } => {
-                            Delta::ReasoningChanged(reasoning_content.clone())
-                        }
-                        Delta_::Text { content } => Delta::ContentChanged(content.clone()),
-                        Delta_::Call { tool_calls } => match &tool_calls[0] {
-                            ToolCall::New { id, function } => Delta::ToolCallAdded(tool::Call {
-                                id: id.clone(),
-                                name: function.name.clone(),
-                                arguments: function.arguments.clone(),
-                            }),
-                            ToolCall::Update { function } => {
-                                Delta::ArgumentsChanged(function.arguments.clone())
-                            }
-                        },
                     };
 
                     let timings = data.timings.map(|timings| Timings {
@@ -263,7 +257,49 @@ impl Reason {
                         },
                     });
 
-                    sender.send(Event { delta, timings }).await;
+                    match data.kind {
+                        Kind::PromptProgress { prompt_progress } => {
+                            let processed = prompt_progress.processed.max(prompt_progress.cache);
+                            let total = prompt_progress.total.max(processed);
+
+                            sender
+                                .send(Event {
+                                    delta: Delta::PromptProcessed(Progress {
+                                        total,
+                                        processed,
+                                        cached: prompt_progress.cache,
+                                    }),
+                                    timings,
+                                })
+                                .await;
+                        }
+                        Kind::Choices { choices } => {
+                            let Some(choice) = choices.first() else {
+                                continue;
+                            };
+
+                            let delta = match &choice.delta {
+                                Delta_::Reasoning { reasoning_content } => {
+                                    Delta::ReasoningChanged(reasoning_content.clone())
+                                }
+                                Delta_::Text { content } => Delta::ContentChanged(content.clone()),
+                                Delta_::Call { tool_calls } => match &tool_calls[0] {
+                                    ToolCall::New { id, function } => {
+                                        Delta::ToolCallAdded(tool::Call {
+                                            id: id.clone(),
+                                            name: function.name.clone(),
+                                            arguments: function.arguments.clone(),
+                                        })
+                                    }
+                                    ToolCall::Update { function } => {
+                                        Delta::ArgumentsChanged(function.arguments.clone())
+                                    }
+                                },
+                            };
+
+                            sender.send(Event { delta, timings }).await;
+                        }
+                    }
                 }
 
                 buffer = last_line.to_vec();
@@ -364,6 +400,7 @@ pub struct Reply {
 impl Reply {
     pub fn update(&mut self, event: &Event) {
         match &event.delta {
+            Delta::PromptProcessed(_) => {}
             Delta::ReasoningChanged(delta) => {
                 self.reasoning.push_str(delta);
             }
@@ -392,10 +429,18 @@ pub struct Event {
 
 #[derive(Debug, Clone)]
 pub enum Delta {
+    PromptProcessed(Progress),
     ReasoningChanged(String),
     ContentChanged(String),
     ToolCallAdded(tool::Call),
     ArgumentsChanged(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Progress {
+    pub total: u64,
+    pub processed: u64,
+    pub cached: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -416,7 +461,7 @@ impl Delta {
     pub fn text(&self) -> Option<&str> {
         match self {
             Self::ReasoningChanged(delta) | Self::ContentChanged(delta) => Some(delta),
-            Self::ToolCallAdded(_) | Self::ArgumentsChanged(_) => None,
+            Self::PromptProcessed(_) | Self::ToolCallAdded(_) | Self::ArgumentsChanged(_) => None,
         }
     }
 }
