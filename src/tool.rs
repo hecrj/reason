@@ -23,6 +23,12 @@ pub struct Call {
 }
 
 #[derive(Debug, Clone)]
+pub enum Delta {
+    CallAdded(Call),
+    ArgumentsChanged(String),
+}
+
+#[derive(Debug, Clone)]
 pub struct Response {
     pub id: Id,
     pub content: String,

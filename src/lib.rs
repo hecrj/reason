@@ -201,7 +201,7 @@ impl Reason {
                     enum Delta_ {
                         Text { content: String },
                         Reasoning { reasoning_content: String },
-                        Call { tool_calls: [ToolCall; 1] },
+                        Call { tool_calls: Vec<ToolCall> },
                     }
 
                     #[derive(Deserialize)]
@@ -283,18 +283,25 @@ impl Reason {
                                     Delta::ReasoningChanged(reasoning_content.clone())
                                 }
                                 Delta_::Text { content } => Delta::ContentChanged(content.clone()),
-                                Delta_::Call { tool_calls } => match &tool_calls[0] {
-                                    ToolCall::New { id, function } => {
-                                        Delta::ToolCallAdded(tool::Call {
-                                            id: id.clone(),
-                                            name: function.name.clone(),
-                                            arguments: function.arguments.clone(),
+                                Delta_::Call { tool_calls } => Delta::ToolCallsChanged(
+                                    tool_calls
+                                        .iter()
+                                        .map(|call| match call {
+                                            ToolCall::New { id, function } => {
+                                                tool::Delta::CallAdded(tool::Call {
+                                                    id: id.clone(),
+                                                    name: function.name.clone(),
+                                                    arguments: function.arguments.clone(),
+                                                })
+                                            }
+                                            ToolCall::Update { function } => {
+                                                tool::Delta::ArgumentsChanged(
+                                                    function.arguments.clone(),
+                                                )
+                                            }
                                         })
-                                    }
-                                    ToolCall::Update { function } => {
-                                        Delta::ArgumentsChanged(function.arguments.clone())
-                                    }
-                                },
+                                        .collect(),
+                                ),
                             };
 
                             sender.send(Event { delta, timings }).await;
@@ -407,15 +414,21 @@ impl Reply {
             Delta::ContentChanged(delta) => {
                 self.content.push_str(delta);
             }
-            Delta::ToolCallAdded(call) => {
-                self.tool_calls.push(call.clone());
-            }
-            Delta::ArgumentsChanged(delta) => {
-                let Some(call) = self.tool_calls.last_mut() else {
-                    return;
-                };
+            Delta::ToolCallsChanged(deltas) => {
+                for delta in deltas {
+                    match delta {
+                        tool::Delta::CallAdded(call) => {
+                            self.tool_calls.push(call.clone());
+                        }
+                        tool::Delta::ArgumentsChanged(delta) => {
+                            let Some(call) = self.tool_calls.last_mut() else {
+                                return;
+                            };
 
-                call.arguments.push_str(delta);
+                            call.arguments.push_str(delta);
+                        }
+                    }
+                }
             }
         }
     }
@@ -432,8 +445,7 @@ pub enum Delta {
     PromptProcessed(Progress),
     ReasoningChanged(String),
     ContentChanged(String),
-    ToolCallAdded(tool::Call),
-    ArgumentsChanged(String),
+    ToolCallsChanged(Vec<tool::Delta>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -461,7 +473,7 @@ impl Delta {
     pub fn text(&self) -> Option<&str> {
         match self {
             Self::ReasoningChanged(delta) | Self::ContentChanged(delta) => Some(delta),
-            Self::PromptProcessed(_) | Self::ToolCallAdded(_) | Self::ArgumentsChanged(_) => None,
+            Self::PromptProcessed(_) | Self::ToolCallsChanged(_) => None,
         }
     }
 }
