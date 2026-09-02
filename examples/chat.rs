@@ -18,8 +18,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     instance.wait_until_ready().await?;
 
-    let reason = Reason::connect(instance.url().clone()).await?;
-    let models = reason.list_models().await?;
+    let (reason, models) = Reason::connect(instance.url().clone()).await?;
 
     if models.is_empty() {
         println!("No models available in the server!");

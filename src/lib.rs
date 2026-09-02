@@ -10,7 +10,6 @@ pub use tool::Tool;
 use serde::Deserialize;
 use serde_json::json;
 use sipper::{Sipper, Straw, sipper};
-use tokio::time;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -31,29 +30,18 @@ pub enum Source {
 }
 
 impl Reason {
-    pub fn connect(url: impl IntoUrl) -> impl Future<Output = Result<Self, Error>> + 'static {
+    pub fn connect(
+        url: impl IntoUrl,
+    ) -> impl Future<Output = Result<(Self, Vec<Model>), Error>> + 'static {
         let url = url.into_url();
         let client = reqwest::Client::new();
 
         async move {
             let url = url?;
+            let reason = Self { client, url };
+            let models = reason.list_models().await?;
 
-            loop {
-                if client
-                    .get(format!("{url}v1/models"))
-                    .timeout(Duration::from_secs(5))
-                    .send()
-                    .await?
-                    .error_for_status()
-                    .is_ok()
-                {
-                    break;
-                }
-
-                time::sleep(Duration::from_secs(1)).await;
-            }
-
-            Ok(Self { client, url })
+            Ok((reason, models))
         }
     }
 

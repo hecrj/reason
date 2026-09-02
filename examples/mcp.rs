@@ -64,8 +64,7 @@ pub async fn main() -> anyhow::Result<()> {
     println!("");
     println!("- Connecting to {url}");
 
-    let reason = Reason::connect(url).await?;
-    let models = reason.list_models().await?;
+    let (reason, models) = Reason::connect(url).await?;
 
     let Some(model) = models.first() else {
         println!("No models found!");
