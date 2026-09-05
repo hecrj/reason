@@ -450,6 +450,12 @@ pub struct Timings {
     pub predicted: Generation,
 }
 
+impl Timings {
+    pub fn total_tokens(&self) -> u64 {
+        self.cached + self.prompt.amount + self.predicted.amount
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Generation {
     pub amount: u64,
