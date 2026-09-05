@@ -443,14 +443,14 @@ pub struct Progress {
     pub cached: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Timings {
     pub cached: u64,
     pub prompt: Generation,
     pub predicted: Generation,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Generation {
     pub amount: u64,
     pub total: Duration,
