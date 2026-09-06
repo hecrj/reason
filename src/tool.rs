@@ -37,6 +37,12 @@ pub struct Response {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Id(String);
 
+impl Id {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[cfg(feature = "techne")]
 mod techne {
     use super::*;
