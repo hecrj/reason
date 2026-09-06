@@ -13,7 +13,7 @@ techne = ["dep:techne-mcp"]
 futures-util = "0.3"
 log = "0.4"
 serde_json = "1"
-sipper = "0.1"
+sipper = "0.2"
 skema = "0.1"
 thiserror = "2"
 url = "2.5"
@@ -45,4 +45,4 @@ techne.features = ["client", "server", "http"]
 
 [patch.crates-io]
 llama-server.git = "https://github.com/hecrj/llama-server.git"
-llama-server.rev = "bceaac8d5653853701482a5048db64109fc5685c"
+llama-server.rev = "f22bc1143c256a93b4f856cd952c3b0526e0880f"

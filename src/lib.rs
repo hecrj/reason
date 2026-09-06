@@ -96,7 +96,7 @@ impl Reason {
         messages: &[Message],
         tools: &[Tool],
     ) -> impl Straw<Reply, Event, Error> {
-        sipper(move |mut progress| async move {
+        sipper(async move |mut progress| {
             let mut completion = self.complete(model, messages, tools).pin();
             let mut reply = Reply::default();
 
@@ -117,7 +117,7 @@ impl Reason {
         messages: &[Message],
         tools: &[Tool],
     ) -> impl Straw<(), Event, Error> {
-        sipper(move |mut sender| async move {
+        sipper(async move |mut sender| {
             let client = reqwest::Client::new();
 
             let request = {

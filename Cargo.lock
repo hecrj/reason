@@ -903,14 +903,14 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 [[package]]
 name = "llama-server"
 version = "0.2.0-dev"
-source = "git+https://github.com/hecrj/llama-server.git?rev=bceaac8d5653853701482a5048db64109fc5685c#bceaac8d5653853701482a5048db64109fc5685c"
+source = "git+https://github.com/hecrj/llama-server.git?rev=f22bc1143c256a93b4f856cd952c3b0526e0880f#f22bc1143c256a93b4f856cd952c3b0526e0880f"
 dependencies = [
  "bitflags",
  "directories",
  "futures",
  "reqwest 0.13.4",
  "serde",
- "sipper",
+ "sipper 0.2.0",
  "thiserror",
  "tokio",
  "url",
@@ -1212,7 +1212,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "sipper",
+ "sipper 0.2.0",
  "skema",
  "techne",
  "techne-mcp",
@@ -1615,6 +1615,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sipper"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ace7bf650ea0110401c6800171a69ea0d8d0bf40253dfc6055245b6cdfbc4201"
+dependencies = [
+ "futures",
+ "pin-project-lite",
+]
+
+[[package]]
 name = "skema"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1741,7 +1751,7 @@ dependencies = [
  "log",
  "reqwest 0.12.28",
  "serde",
- "sipper",
+ "sipper 0.1.0",
  "techne-mcp",
  "tokio",
 ]
