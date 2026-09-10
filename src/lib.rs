@@ -124,7 +124,7 @@ impl Reason {
                 let messages: Vec<_> = messages.iter().map(Message::to_json).collect();
 
                 client
-                    .post(format!("{url}v1/chat/completions", url = self.url,))
+                    .post(format!("{url}v1/chat/completions", url = self.url))
                     .json(&json!({
                         "model": model.0,
                         "messages": messages,
@@ -133,6 +133,7 @@ impl Reason {
                         "cache_prompt": true,
                         "timings_per_token": true,
                         "return_progress": true,
+                        "prompt_cache_options": { "mode": "implicit" },
                     }))
             };
 
