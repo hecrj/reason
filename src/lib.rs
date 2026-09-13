@@ -189,6 +189,70 @@ impl Parser {
     fn parse(&mut self, line: &[u8]) -> Option<Event> {
         const PREFIX: usize = b"data:".len();
 
+        #[derive(Deserialize)]
+        struct Data {
+            #[serde(flatten)]
+            kind: Kind,
+            #[serde(default)]
+            timings: Option<Timings_>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Kind {
+            Choices { choices: Vec<Choice> },
+            PromptProgress { prompt_progress: PromptProgress },
+        }
+
+        #[derive(Deserialize)]
+        struct Choice {
+            delta: Delta_,
+        }
+
+        #[derive(Deserialize)]
+        struct Timings_ {
+            cache_n: u64,
+            prompt_n: u64,
+            prompt_ms: f64,
+            prompt_per_token_ms: f64,
+            predicted_n: u64,
+            predicted_ms: f64,
+            predicted_per_token_ms: f64,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Delta_ {
+            Text { content: String },
+            Reasoning { reasoning_content: String },
+            Call { tool_calls: Vec<ToolCall> },
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum ToolCall {
+            New { id: tool::Id, function: Function },
+            Update { function: FunctionUpdate },
+        }
+
+        #[derive(Deserialize)]
+        struct Function {
+            name: String,
+            arguments: String,
+        }
+
+        #[derive(Deserialize)]
+        struct FunctionUpdate {
+            arguments: String,
+        }
+
+        #[derive(Deserialize)]
+        struct PromptProgress {
+            total: u64,
+            cache: u64,
+            processed: u64,
+        }
+
         if log::log_enabled!(log::Level::Debug) {
             log::debug!("{}", String::from_utf8_lossy(line));
         }
@@ -284,70 +348,6 @@ impl Parser {
         self.predicted = Some(predicted);
         self.reasoning + through
     }
-}
-
-#[derive(Deserialize)]
-struct Data {
-    #[serde(flatten)]
-    kind: Kind,
-    #[serde(default)]
-    timings: Option<Timings_>,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Kind {
-    Choices { choices: Vec<Choice> },
-    PromptProgress { prompt_progress: PromptProgress },
-}
-
-#[derive(Deserialize)]
-struct Choice {
-    delta: Delta_,
-}
-
-#[derive(Deserialize)]
-struct Timings_ {
-    cache_n: u64,
-    prompt_n: u64,
-    prompt_ms: f64,
-    prompt_per_token_ms: f64,
-    predicted_n: u64,
-    predicted_ms: f64,
-    predicted_per_token_ms: f64,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Delta_ {
-    Text { content: String },
-    Reasoning { reasoning_content: String },
-    Call { tool_calls: Vec<ToolCall> },
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum ToolCall {
-    New { id: tool::Id, function: Function },
-    Update { function: FunctionUpdate },
-}
-
-#[derive(Deserialize)]
-struct Function {
-    name: String,
-    arguments: String,
-}
-
-#[derive(Deserialize)]
-struct FunctionUpdate {
-    arguments: String,
-}
-
-#[derive(Deserialize)]
-struct PromptProgress {
-    total: u64,
-    cache: u64,
-    processed: u64,
 }
 
 #[derive(Debug, Clone)]
