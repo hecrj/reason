@@ -43,6 +43,12 @@ impl Id {
     }
 }
 
+impl From<String> for Id {
+    fn from(id: String) -> Self {
+        Self(id)
+    }
+}
+
 #[cfg(feature = "techne")]
 mod techne {
     use super::*;
