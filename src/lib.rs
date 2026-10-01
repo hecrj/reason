@@ -1,9 +1,11 @@
 mod error;
+mod key;
 
 pub mod model;
 pub mod tool;
 
 pub use error::Error;
+pub use key::Key;
 pub use model::Model;
 pub use tool::Tool;
 
@@ -17,10 +19,22 @@ use std::time::Duration;
 pub use reqwest::IntoUrl;
 pub use url::Url;
 
+/// A connection to an inference server.
 #[derive(Debug, Clone)]
 pub struct Reason {
     client: reqwest::Client,
-    url: Url,
+    settings: Settings,
+}
+
+/// The settings for a new [`Reason`] connection.
+#[derive(Debug, Clone)]
+pub struct Settings {
+    /// The URL of the inference server.
+    pub url: Url,
+
+    /// The API key, sent as a `Bearer` token in the `Authorization` header
+    /// of every request.
+    pub api_key: Option<Key>,
 }
 
 #[derive(Debug, Clone)]
@@ -30,15 +44,22 @@ pub enum Source {
 }
 
 impl Reason {
-    pub fn connect(
-        url: impl IntoUrl,
-    ) -> impl Future<Output = Result<(Self, Vec<Model>), Error>> + 'static {
-        let url = url.into_url();
-        let client = reqwest::Client::new();
+    /// Connects to an inference server using the given [`Settings`].
+    pub fn connect<S>(
+        settings: S,
+    ) -> impl Future<Output = Result<(Self, Vec<Model>), Error>> + 'static
+    where
+        S: TryInto<Settings>,
+        Error: From<S::Error>,
+    {
+        let settings = settings.try_into().map_err(Error::from);
 
         async move {
-            let url = url?;
-            let reason = Self { client, url };
+            let reason = Self {
+                client: reqwest::Client::new(),
+                settings: settings?,
+            };
+
             let models = reason.list_models().await?;
 
             Ok((reason, models))
@@ -46,11 +67,29 @@ impl Reason {
     }
 
     pub fn url(&self) -> &Url {
-        &self.url
+        &self.settings.url
     }
 
     fn endpoint(&self, path: &str) -> String {
-        format!("{}v1/{}", self.url, path)
+        format!("{}v1/{}", self.settings.url, path)
+    }
+
+    fn get(&self, path: &str) -> reqwest::RequestBuilder {
+        let request = self.client.get(self.endpoint(path));
+
+        match &self.settings.api_key {
+            Some(key) => request.bearer_auth(key.expose()),
+            None => request,
+        }
+    }
+
+    fn post(&self, path: &str) -> reqwest::RequestBuilder {
+        let request = self.client.post(self.endpoint(path));
+
+        match &self.settings.api_key {
+            Some(key) => request.bearer_auth(key.expose()),
+            None => request,
+        }
     }
 
     pub async fn list_models(&self) -> Result<Vec<Model>, Error> {
@@ -72,8 +111,7 @@ impl Reason {
         }
 
         let models: Response = self
-            .client
-            .get(self.endpoint("models"))
+            .get("models")
             .send()
             .await?
             .error_for_status()?
@@ -118,23 +156,19 @@ impl Reason {
         tools: &[Tool],
     ) -> impl Straw<(), Event, Error> {
         sipper(async move |mut sender| {
-            let client = reqwest::Client::new();
-
             let request = {
                 let messages: Vec<_> = messages.iter().map(Message::to_json).collect();
 
-                client
-                    .post(format!("{url}v1/chat/completions", url = self.url))
-                    .json(&json!({
-                        "model": model.0,
-                        "messages": messages,
-                        "tools": tools,
-                        "stream": true,
-                        "cache_prompt": true,
-                        "timings_per_token": true,
-                        "return_progress": true,
-                        "prompt_cache_options": { "mode": "implicit" },
-                    }))
+                self.post("chat/completions").json(&json!({
+                    "model": model.0,
+                    "messages": messages,
+                    "tools": tools,
+                    "stream": true,
+                    "cache_prompt": true,
+                    "timings_per_token": true,
+                    "return_progress": true,
+                    "prompt_cache_options": { "mode": "implicit" },
+                }))
             };
 
             let mut response = request.send().await?.error_for_status()?;
@@ -164,6 +198,54 @@ impl Reason {
             }
 
             Ok(())
+        })
+    }
+}
+
+impl From<Url> for Settings {
+    fn from(url: Url) -> Self {
+        Self { url, api_key: None }
+    }
+}
+
+impl From<&Url> for Settings {
+    fn from(url: &Url) -> Self {
+        Self {
+            url: url.clone(),
+            api_key: None,
+        }
+    }
+}
+
+impl TryFrom<String> for Settings {
+    type Error = url::ParseError;
+
+    fn try_from(url: String) -> Result<Self, Self::Error> {
+        Ok(Self {
+            url: url.parse()?,
+            api_key: None,
+        })
+    }
+}
+
+impl TryFrom<&str> for Settings {
+    type Error = url::ParseError;
+
+    fn try_from(url: &str) -> Result<Self, Self::Error> {
+        Ok(Self {
+            url: url.parse()?,
+            api_key: None,
+        })
+    }
+}
+
+impl TryFrom<&String> for Settings {
+    type Error = url::ParseError;
+
+    fn try_from(url: &String) -> Result<Self, Self::Error> {
+        Ok(Self {
+            url: url.parse()?,
+            api_key: None,
         })
     }
 }
@@ -528,6 +610,34 @@ pub enum BootEvent {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn api_key_redacted_in_debug() {
+        let settings = Settings {
+            url: Url::parse("http://127.0.0.1:8080/").expect("url"),
+            api_key: Some("sk-super-secret".into()),
+        };
+
+        let reason = Reason {
+            client: reqwest::Client::new(),
+            settings,
+        };
+
+        assert!(!format!("{reason:?}").contains("sk-super-secret"));
+    }
+
+    #[test]
+    fn settings_from_string() {
+        let settings = Settings::try_from("http://127.0.0.1:8080/").expect("url");
+
+        assert_eq!(settings.url.as_str(), "http://127.0.0.1:8080/");
+        assert!(settings.api_key.is_none());
+    }
+
+    #[test]
+    fn settings_invalid_url() {
+        assert!(Settings::try_from("not a url").is_err());
+    }
 
     fn data(value: serde_json::Value) -> String {
         format!("data: {value}")

@@ -17,6 +17,7 @@ sipper = "0.2"
 skema = "0.1"
 thiserror = "2"
 url = "2.5"
+zeroize = "1"
 
 reqwest.version = "0.12"
 reqwest.features = ["json"]

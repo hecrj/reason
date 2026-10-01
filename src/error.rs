@@ -1,5 +1,6 @@
 use tokio::task;
 
+use std::convert::Infallible;
 use std::io;
 use std::sync::Arc;
 
@@ -7,6 +8,8 @@ use std::sync::Arc;
 pub enum Error {
     #[error("request failed: {0}")]
     RequestFailed(Arc<reqwest::Error>),
+    #[error("url parsing failed: {0}")]
+    UrlParseFailed(url::ParseError),
     #[error("io operation failed: {0}")]
     IOFailed(Arc<io::Error>),
     #[error("docker operation failed: {0}")]
@@ -42,5 +45,17 @@ impl From<serde_json::Error> for Error {
 impl From<task::JoinError> for Error {
     fn from(error: task::JoinError) -> Self {
         Self::JoinFailed(Arc::new(error))
+    }
+}
+
+impl From<url::ParseError> for Error {
+    fn from(error: url::ParseError) -> Self {
+        Self::UrlParseFailed(error)
+    }
+}
+
+impl From<Infallible> for Error {
+    fn from(error: Infallible) -> Self {
+        match error {}
     }
 }
