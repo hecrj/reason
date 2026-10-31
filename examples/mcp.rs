@@ -1,5 +1,5 @@
 use reason::tool;
-use reason::{Message, Reason, Tool};
+use reason::{Envelope, Message, Reason, Tool};
 
 use anyhow::bail;
 use sipper::Sipper;
@@ -39,7 +39,7 @@ pub async fn main() -> anyhow::Result<()> {
         }
     };
 
-    println!("");
+    println!();
 
     let server = mcp.server().information();
 
@@ -61,7 +61,7 @@ pub async fn main() -> anyhow::Result<()> {
         println!("    {}\n        {}", function.name, function.description);
     }
 
-    println!("");
+    println!();
     println!("- Connecting to {url}");
 
     let (reason, models) = Reason::connect(url).await?;
@@ -71,7 +71,7 @@ pub async fn main() -> anyhow::Result<()> {
         std::process::exit(1)
     };
 
-    println!("");
+    println!();
     println!("-------------------");
     println!("Assistant is ready. Break the ice!");
     println!("-------------------");
@@ -102,7 +102,7 @@ pub async fn main() -> anyhow::Result<()> {
 
         let mut reply = reason.reply(&model.id, &messages, &tools).pin();
 
-        println!("");
+        println!();
 
         while let Some(event) = reply.sip().await {
             if let Some(text) = event.delta.text() {
@@ -112,9 +112,9 @@ pub async fn main() -> anyhow::Result<()> {
             io::stdout().flush()?;
         }
 
-        println!("");
+        println!();
 
-        let reply = reply.await?;
+        let Envelope { reply, .. } = reply.await?;
         is_processing = false;
 
         let tool_calls = reply.tool_calls.clone();
@@ -150,7 +150,7 @@ pub async fn main() -> anyhow::Result<()> {
             };
 
             println!("<= {content}");
-            println!("");
+            println!();
 
             messages.push(Message::Tool(tool::Response { id, content }));
 

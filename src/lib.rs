@@ -133,19 +133,19 @@ impl Reason {
         model: &model::Id,
         messages: &[Message],
         tools: &[Tool],
-    ) -> impl Straw<Reply, Event, Error> {
+    ) -> impl Straw<Envelope, Event, Error> {
         sipper(async move |mut progress| {
             let mut completion = self.complete(model, messages, tools).pin();
             let mut reply = Reply::default();
 
             while let Some(event) = completion.sip().await {
-                reply.update(&event);
+                reply.update(&event.delta);
                 progress.send(event).await;
             }
 
-            completion.await?;
+            let stamp = completion.await?;
 
-            Ok(reply)
+            Ok(Envelope { reply, stamp })
         })
     }
 
@@ -154,7 +154,7 @@ impl Reason {
         model: &model::Id,
         messages: &[Message],
         tools: &[Tool],
-    ) -> impl Straw<(), Event, Error> {
+    ) -> impl Straw<Stamp, Event, Error> {
         sipper(async move |mut sender| {
             let request = {
                 let messages: Vec<_> = messages.iter().map(Message::to_json).collect();
@@ -174,6 +174,7 @@ impl Reason {
             let mut response = request.send().await?.error_for_status()?;
             let mut buffer = Vec::new();
             let mut parser = Parser::default();
+            let mut stamp = Stamp::Stop;
 
             while let Some(chunk) = response.chunk().await? {
                 buffer.extend(chunk);
@@ -189,15 +190,22 @@ impl Reason {
                 };
 
                 for line in lines {
-                    if let Some(event) = parser.parse(line) {
-                        sender.send(event).await;
+                    if let Some(data) = parser.parse(line) {
+                        match data {
+                            Data::Event(event) => {
+                                sender.send(event).await;
+                            }
+                            Data::Finish(new_stamp) => {
+                                stamp = new_stamp;
+                            }
+                        }
                     }
                 }
 
                 buffer = last_line.to_vec();
             }
 
-            Ok(())
+            Ok(stamp)
         })
     }
 }
@@ -267,12 +275,17 @@ struct Parser {
     predicted: Option<Duration>,
 }
 
+pub enum Data {
+    Event(Event),
+    Finish(Stamp),
+}
+
 impl Parser {
-    fn parse(&mut self, line: &[u8]) -> Option<Event> {
+    fn parse(&mut self, line: &[u8]) -> Option<Data> {
         const PREFIX: usize = b"data:".len();
 
         #[derive(Deserialize)]
-        struct Data {
+        struct Data_ {
             #[serde(flatten)]
             kind: Kind,
             #[serde(default)]
@@ -289,6 +302,7 @@ impl Parser {
         #[derive(Deserialize)]
         struct Choice {
             delta: Delta_,
+            finish_reason: Option<String>,
         }
 
         #[derive(Deserialize)]
@@ -308,6 +322,7 @@ impl Parser {
             Text { content: String },
             Reasoning { reasoning_content: String },
             Call { tool_calls: Vec<ToolCall> },
+            None {},
         }
 
         #[derive(Deserialize)]
@@ -343,7 +358,7 @@ impl Parser {
             return None;
         }
 
-        let Ok(data): Result<Data, _> = serde_json::from_slice(&line[PREFIX..]) else {
+        let Ok(data): Result<Data_, _> = serde_json::from_slice(&line[PREFIX..]) else {
             return None;
         };
 
@@ -378,6 +393,16 @@ impl Parser {
                             })
                             .collect(),
                     ),
+                    Delta_::None {} => {
+                        let stamp = match choice.finish_reason.as_ref()?.as_str() {
+                            "stop" => Stamp::Stop,
+                            "tool_calls" => Stamp::ToolCalls,
+                            "length" => Stamp::LengthExceeded,
+                            _ => return None,
+                        };
+
+                        return Some(Data::Finish(stamp));
+                    }
                 }
             }
         };
@@ -401,7 +426,7 @@ impl Parser {
             timings.reasoning = self.sample_reasoning(timings, &delta);
         }
 
-        Some(Event { delta, timings })
+        Some(Data::Event(Event { delta, timings }))
     }
 
     /// Feed a chunk's timings into the reasoning derivation, returning the
@@ -512,6 +537,11 @@ impl Message {
     }
 }
 
+pub struct Envelope {
+    pub reply: Reply,
+    pub stamp: Stamp,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Reply {
     pub reasoning: String,
@@ -519,9 +549,16 @@ pub struct Reply {
     pub tool_calls: Vec<tool::Call>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Stamp {
+    LengthExceeded,
+    ToolCalls,
+    Stop,
+}
+
 impl Reply {
-    pub fn update(&mut self, event: &Event) {
-        match &event.delta {
+    pub fn update(&mut self, delta: &Delta) {
+        match delta {
             Delta::PromptProcessed(_) => {}
             Delta::ReasoningChanged(delta) => {
                 self.reasoning.push_str(delta);
@@ -660,7 +697,10 @@ mod test {
 
         lines
             .iter()
-            .filter_map(|line| parser.parse(line.as_bytes()))
+            .filter_map(|line| match parser.parse(line.as_bytes()) {
+                Some(Data::Event(event)) => Some(event),
+                _ => None,
+            })
             .collect()
     }
 
@@ -812,5 +852,70 @@ mod test {
             &deltas[1],
             tool::Delta::ArgumentsChanged(fragment) if fragment == "\"ls\"}"
         ));
+    }
+
+    fn finish(lines: &[String]) -> Option<Stamp> {
+        let mut parser = Parser::default();
+
+        lines
+            .iter()
+            .find_map(|line| match parser.parse(line.as_bytes()) {
+                Some(Data::Finish(stamp)) => Some(stamp),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn finish_stop() {
+        let stamp = finish(&[
+            data(json!({"choices": [{"delta": {"content": "hi"}}]})),
+            data(json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})),
+        ]);
+
+        assert_eq!(stamp, Some(Stamp::Stop));
+    }
+
+    #[test]
+    fn finish_tool_calls() {
+        let stamp = finish(&[
+            data(json!({
+                "choices": [{"delta": {"tool_calls": [
+                    {"id": "call-1", "function": {"name": "bash", "arguments": "{}"}}
+                ]}}]
+            })),
+            data(json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})),
+        ]);
+
+        assert_eq!(stamp, Some(Stamp::ToolCalls));
+    }
+
+    #[test]
+    fn finish_length() {
+        let stamp = finish(&[
+            data(json!({"choices": [{"delta": {"content": "hi"}}]})),
+            data(json!({"choices": [{"delta": {}, "finish_reason": "length"}]})),
+        ]);
+
+        assert_eq!(stamp, Some(Stamp::LengthExceeded));
+    }
+
+    #[test]
+    fn finish_empty_delta_without_reason() {
+        let mut parser = Parser::default();
+
+        let line = data(json!({"choices": [{"delta": {}}]}));
+
+        assert!(parser.parse(line.as_bytes()).is_none());
+    }
+
+    #[test]
+    fn finish_unknown_reason() {
+        let mut parser = Parser::default();
+
+        let line = data(json!({
+            "choices": [{"delta": {}, "finish_reason": "content_filter"}]
+        }));
+
+        assert!(parser.parse(line.as_bytes()).is_none());
     }
 }

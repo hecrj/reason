@@ -1,4 +1,4 @@
-use reason::{Message, Reason};
+use reason::{Envelope, Message, Reason};
 
 use llama_server::Server;
 use sipper::Sipper;
@@ -72,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
 
         let mut reply = reason.reply(&model.id, &messages, &[]).pin();
 
-        println!("");
+        println!();
 
         while let Some(event) = reply.sip().await {
             if let Some(text) = event.delta.text() {
@@ -82,9 +82,9 @@ async fn main() -> anyhow::Result<()> {
             io::stdout().flush()?;
         }
 
-        let reply = reply.await?;
+        let Envelope { reply, .. } = reply.await?;
         messages.push(Message::Assistant(reply));
 
-        println!("");
+        println!();
     }
 }
