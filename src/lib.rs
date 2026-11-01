@@ -297,12 +297,17 @@ impl Parser {
         enum Kind {
             Choices { choices: Vec<Choice> },
             PromptProgress { prompt_progress: PromptProgress },
+            Stop { choices: Vec<Stop> },
         }
 
         #[derive(Deserialize)]
         struct Choice {
             delta: Delta_,
-            finish_reason: Option<String>,
+        }
+
+        #[derive(Deserialize)]
+        struct Stop {
+            finish_reason: String,
         }
 
         #[derive(Deserialize)]
@@ -322,7 +327,6 @@ impl Parser {
             Text { content: String },
             Reasoning { reasoning_content: String },
             Call { tool_calls: Vec<ToolCall> },
-            None {},
         }
 
         #[derive(Deserialize)]
@@ -393,17 +397,19 @@ impl Parser {
                             })
                             .collect(),
                     ),
-                    Delta_::None {} => {
-                        let stamp = match choice.finish_reason.as_ref()?.as_str() {
-                            "stop" => Stamp::Stop,
-                            "tool_calls" => Stamp::ToolCalls,
-                            "length" => Stamp::LengthExceeded,
-                            _ => return None,
-                        };
-
-                        return Some(Data::Finish(stamp));
-                    }
                 }
+            }
+            Kind::Stop { choices } => {
+                let stop = choices.first()?;
+
+                let stamp = match stop.finish_reason.as_str() {
+                    "stop" => Stamp::Stop,
+                    "tool_calls" => Stamp::ToolCalls,
+                    "length" => Stamp::LengthExceeded,
+                    _ => return None,
+                };
+
+                return Some(Data::Finish(stamp));
             }
         };
 
@@ -897,6 +903,22 @@ mod test {
         ]);
 
         assert_eq!(stamp, Some(Stamp::LengthExceeded));
+    }
+
+    #[test]
+    fn finish_without_delta() {
+        for (reason, expected) in [
+            ("stop", Stamp::Stop),
+            ("tool_calls", Stamp::ToolCalls),
+            ("length", Stamp::LengthExceeded),
+        ] {
+            let stamp = finish(&[
+                data(json!({"choices": [{"delta": {"content": "hi"}}]})),
+                data(json!({"choices": [{"finish_reason": reason}]})),
+            ]);
+
+            assert_eq!(stamp, Some(expected));
+        }
     }
 
     #[test]
